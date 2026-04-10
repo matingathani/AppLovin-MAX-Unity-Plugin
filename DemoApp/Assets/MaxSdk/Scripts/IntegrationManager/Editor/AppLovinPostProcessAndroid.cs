@@ -93,10 +93,15 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             // Users on older Unity versions can also use a custom AGP 8.x, so check the actual AGP
             // version from the root build.gradle rather than relying solely on the Unity version.
 #if !UNITY_6000_0_OR_NEWER
-            if (!IsAgpVersionAtLeast(rootGradleBuildFilePath, 8, 0))
+            var agpIsAtLeast8 = IsAgpVersionAtLeast(rootGradleBuildFilePath, 8, 0);
+            if (agpIsAtLeast8 == false)
             {
                 // Disable dexing using artifact transform (it causes issues for ExoPlayer with Gradle plugin 3.5.0+)
                 gradlePropertiesUpdated.Add(PropertyDexingArtifactTransform + DisableProperty);
+            }
+            else if (agpIsAtLeast8 == null)
+            {
+                MaxSdkLogger.UserWarning("[AppLovin MAX] Could not determine AGP version from " + rootGradleBuildFilePath + "; skipping android.enableDexingArtifactTransform. If your project uses AGP < 8.0, add 'android.enableDexingArtifactTransform=false' to gradle.properties manually.");
             }
 #endif
 
@@ -459,17 +464,31 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
 
         /// <summary>
         /// Returns true if the Android Gradle Plugin version declared in the given build.gradle is
-        /// at least <paramref name="major"/>.<paramref name="minor"/>. Returns false when the file
-        /// cannot be read or the version cannot be determined, so callers should treat an unknown
-        /// AGP version as "old" and include the property for safety.
+        /// at least <paramref name="major"/>.<paramref name="minor"/>. Returns null when the file
+        /// cannot be read, the version is declared via a variable/non-literal format, or any IO
+        /// error occurs. Callers should treat a null result as an unknown version and skip writing
+        /// the property to avoid build failures on AGP 8.0+.
         /// </summary>
-        private static bool IsAgpVersionAtLeast(string buildGradlePath, int major, int minor)
+        private static bool? IsAgpVersionAtLeast(string buildGradlePath, int major, int minor)
         {
-            if (!File.Exists(buildGradlePath)) return false;
+            if (!File.Exists(buildGradlePath)) return null;
 
-            var content = File.ReadAllText(buildGradlePath);
+            string content;
+            try
+            {
+                content = File.ReadAllText(buildGradlePath);
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
 
-            // Matches: classpath 'com.android.tools.build:gradle:8.3.0' (Unity < 2022.3)
+            // Matches numeric literals only: classpath 'com.android.tools.build:gradle:8.3.0' (Unity < 2022.3)
+            // Variable-based declarations (e.g. "gradle:$agpVersion") are not matched; returns null.
             var match = Regex.Match(content, @"com\.android\.tools\.build:gradle:(\d+)\.(\d+)");
 
             // Matches: id 'com.android.application' version '8.3.0' (Unity 2022.3+)
@@ -478,10 +497,15 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
                 match = Regex.Match(content, @"com\.android\.(?:application|library)['""\s]+version['""\s]+(\d+)\.(\d+)");
             }
 
-            if (!match.Success) return false;
+            if (!match.Success) return null;
 
-            var agpMajor = int.Parse(match.Groups[1].Value);
-            var agpMinor = int.Parse(match.Groups[2].Value);
+            int agpMajor;
+            int agpMinor;
+            if (!int.TryParse(match.Groups[1].Value, out agpMajor) || !int.TryParse(match.Groups[2].Value, out agpMinor))
+            {
+                return null;
+            }
+
             return agpMajor > major || (agpMajor == major && agpMinor >= minor);
         }
 
