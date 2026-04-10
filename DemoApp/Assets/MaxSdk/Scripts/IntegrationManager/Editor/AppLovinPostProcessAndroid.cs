@@ -89,10 +89,15 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             gradlePropertiesUpdated.Add(PropertyAndroidX + EnableProperty);
             gradlePropertiesUpdated.Add(PropertyJetifier + EnableProperty);
 
-            // `DexingArtifactTransform` has been removed in Gradle 8+ which is the default Gradle version for Unity 6.
+            // `DexingArtifactTransform` has been removed in AGP 8.0+, which is the default for Unity 6.
+            // Users on older Unity versions can also use a custom AGP 8.x, so check the actual AGP
+            // version from the root build.gradle rather than relying solely on the Unity version.
 #if !UNITY_6000_0_OR_NEWER
-            // Disable dexing using artifact transform (it causes issues for ExoPlayer with Gradle plugin 3.5.0+)
-            gradlePropertiesUpdated.Add(PropertyDexingArtifactTransform + DisableProperty);
+            if (!IsAgpVersionAtLeast(rootGradleBuildFilePath, 8, 0))
+            {
+                // Disable dexing using artifact transform (it causes issues for ExoPlayer with Gradle plugin 3.5.0+)
+                gradlePropertiesUpdated.Add(PropertyDexingArtifactTransform + DisableProperty);
+            }
 #endif
 
             try
@@ -450,6 +455,34 @@ namespace AppLovinMax.Scripts.IntegrationManager.Editor
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Returns true if the Android Gradle Plugin version declared in the given build.gradle is
+        /// at least <paramref name="major"/>.<paramref name="minor"/>. Returns false when the file
+        /// cannot be read or the version cannot be determined, so callers should treat an unknown
+        /// AGP version as "old" and include the property for safety.
+        /// </summary>
+        private static bool IsAgpVersionAtLeast(string buildGradlePath, int major, int minor)
+        {
+            if (!File.Exists(buildGradlePath)) return false;
+
+            var content = File.ReadAllText(buildGradlePath);
+
+            // Matches: classpath 'com.android.tools.build:gradle:8.3.0' (Unity < 2022.3)
+            var match = Regex.Match(content, @"com\.android\.tools\.build:gradle:(\d+)\.(\d+)");
+
+            // Matches: id 'com.android.application' version '8.3.0' (Unity 2022.3+)
+            if (!match.Success)
+            {
+                match = Regex.Match(content, @"com\.android\.(?:application|library)['""\s]+version['""\s]+(\d+)\.(\d+)");
+            }
+
+            if (!match.Success) return false;
+
+            var agpMajor = int.Parse(match.Groups[1].Value);
+            var agpMinor = int.Parse(match.Groups[2].Value);
+            return agpMajor > major || (agpMajor == major && agpMinor >= minor);
         }
 
         /// <summary>
